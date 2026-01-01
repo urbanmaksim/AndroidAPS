@@ -20,7 +20,7 @@ jobs:
       - name: Grant execute to gradlew
         run: chmod +x ./gradlew
 
-      # Build ALL debug APKs (AAPS repo may output apk from different module/flavor)
+      # Build ALL debug APKs (AAPS can output APKs from different modules/flavors)
       - name: Build Debug APK
         run: ./gradlew assembleDebug
 
@@ -34,7 +34,6 @@ jobs:
           echo "BT=$BT" >> $GITHUB_ENV
           echo "Using build-tools: $BT"
 
-      # Find the first produced APK under any build outputs
       - name: Find built APK
         run: |
           echo "Searching for APK outputs..."
