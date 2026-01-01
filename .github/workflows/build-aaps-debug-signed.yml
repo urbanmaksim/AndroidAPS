@@ -3,6 +3,10 @@ name: Build AndroidAPS (debug-signed for update)
 on:
   workflow_dispatch:
 
+concurrency:
+  group: aaps-debug-signed-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -20,7 +24,6 @@ jobs:
       - name: Grant execute to gradlew
         run: chmod +x ./gradlew
 
-      # Build ALL debug APKs (AAPS can output APKs from different modules/flavors)
       - name: Build Debug APK
         run: ./gradlew assembleDebug
 
