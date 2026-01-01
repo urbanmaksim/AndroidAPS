@@ -20,8 +20,9 @@ jobs:
       - name: Grant execute to gradlew
         run: chmod +x ./gradlew
 
+      # Build ALL debug APKs (AAPS repo may output apk from different module/flavor)
       - name: Build Debug APK
-        run: ./gradlew :app:assembleDebug
+        run: ./gradlew assembleDebug
 
       - name: Decode keystore
         run: |
@@ -33,10 +34,23 @@ jobs:
           echo "BT=$BT" >> $GITHUB_ENV
           echo "Using build-tools: $BT"
 
+      # Find the first produced APK under any build outputs
+      - name: Find built APK
+        run: |
+          echo "Searching for APK outputs..."
+          find . -maxdepth 12 -type f -name "*.apk" -path "*build/outputs/apk*" -print
+
+          APK_IN=$(find . -maxdepth 12 -type f -name "*.apk" -path "*build/outputs/apk*" | head -n 1)
+          if [ -z "$APK_IN" ]; then
+            echo "No APK found under *build/outputs/apk*"
+            exit 1
+          fi
+
+          echo "APK_IN=$APK_IN" >> $GITHUB_ENV
+          echo "Using APK: $APK_IN"
+
       - name: Align APK
         run: |
-          APK_IN=$(ls app/build/outputs/apk/debug/*.apk | head -n 1)
-          echo "APK_IN=$APK_IN" >> $GITHUB_ENV
           ${ANDROID_HOME}/build-tools/${BT}/zipalign -f 4 "$APK_IN" aaps-aligned.apk
 
       - name: Sign APK
