@@ -1,0 +1,60 @@
+name: Build AndroidAPS (debug-signed for update)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Grant execute to gradlew
+        run: chmod +x ./gradlew
+
+      - name: Build Debug APK
+        run: ./gradlew :app:assembleDebug
+
+      - name: Decode keystore
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > debug.keystore
+
+      - name: Pick latest Android build-tools
+        run: |
+          BT=$(ls -1 ${ANDROID_HOME}/build-tools | sort -V | tail -n 1)
+          echo "BT=$BT" >> $GITHUB_ENV
+          echo "Using build-tools: $BT"
+
+      - name: Align APK
+        run: |
+          APK_IN=$(ls app/build/outputs/apk/debug/*.apk | head -n 1)
+          echo "APK_IN=$APK_IN" >> $GITHUB_ENV
+          ${ANDROID_HOME}/build-tools/${BT}/zipalign -f 4 "$APK_IN" aaps-aligned.apk
+
+      - name: Sign APK
+        run: |
+          ${ANDROID_HOME}/build-tools/${BT}/apksigner sign \
+            --ks debug.keystore \
+            --ks-pass pass:${{ secrets.KEYSTORE_PASSWORD }} \
+            --ks-key-alias ${{ secrets.KEY_ALIAS }} \
+            --key-pass pass:${{ secrets.KEY_PASSWORD }} \
+            --out aaps-debug-signed.apk \
+            aaps-aligned.apk
+
+      - name: Verify signature
+        run: |
+          ${ANDROID_HOME}/build-tools/${BT}/apksigner verify --print-certs aaps-debug-signed.apk
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aaps-debug-signed
+          path: aaps-debug-signed.apk
