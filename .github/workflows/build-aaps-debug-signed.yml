@@ -1,4 +1,4 @@
-name: Build AndroidAPS (debug-signed for update)
+name: Build AndroidAPS (debug-signed)
 
 on:
   workflow_dispatch:
@@ -6,175 +6,73 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 60
 
     steps:
-      - uses: actions/checkout@v4
-        with:
-          clean: true
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Setup Java 17
+      - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
-          distribution: temurin
-          java-version: "17"
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
 
-      - name: Setup Android SDK (use existing)
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x ./gradlew
+
+      - name: Decode Keystore
         run: |
-          # Runner jau turi SDK, nustatome kintamuosius
-          export ANDROID_HOME=/usr/local/lib/android/sdk
-          echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
-          
-          # Patikriname, ar yra cmdline-tools
-          if [ ! -d "$ANDROID_HOME/cmdline-tools" ]; then
-            echo "Warning: cmdline-tools not found, downloading..."
-            # Atsisiųsti tik cmdline-tools jei nėra
-            wget -q https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip
-            unzip -q commandlinetools-linux-9477386_latest.zip
-            mkdir -p $ANDROID_HOME/cmdline-tools
-            mv cmdline-tools $ANDROID_HOME/cmdline-tools/latest
-            rm -f commandlinetools-linux-9477386_latest.zip
-          fi
-          
-          # Įtraukiame į PATH
-          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> $GITHUB_PATH
-          echo "$ANDROID_HOME/platform-tools" >> $GITHUB_PATH
-          
-          # Priimame licencijas
-          echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null 2>&1 || true
-          
-          # Įdiegiame trūkstamus paketus
-          echo "Checking installed packages..."
-          
-          # Tikriname, ar yra platform-tools
-          if [ ! -d "$ANDROID_HOME/platform-tools" ]; then
-            echo "Installing platform-tools..."
-            $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platform-tools"
-          fi
-          
-          # Tikriname, ar yra Android 34 platform
-          if [ ! -d "$ANDROID_HOME/platforms/android-34" ]; then
-            echo "Installing Android SDK Platform 34..."
-            $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-34"
-          fi
-          
-          # Tikriname, ar yra build-tools 34.0.0
-          if [ ! -d "$ANDROID_HOME/build-tools/34.0.0" ]; then
-            echo "Installing build-tools 34.0.0..."
-            $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "build-tools;34.0.0"
-          fi
-          
-          # NDK (optional)
-          if [ ! -d "$ANDROID_HOME/ndk" ] && [ ! -d "$ANDROID_HOME/ndk/25.2.9519653" ]; then
-            echo "Installing NDK..."
-            $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "ndk;25.2.9519653" || echo "NDK installation skipped"
-          fi
-          
-          echo "Android SDK setup complete"
-          echo "Installed packages:"
-          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --list | grep -E "Installed packages:" -A 20
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > $GITHUB_WORKSPACE/keystore.jks
+          echo "KEYSTORE_PATH=$GITHUB_WORKSPACE/keystore.jks" >> $GITHUB_ENV
 
-      - name: Setup Gradle (no cache)
-        uses: gradle/actions/setup-gradle@v3
-        with:
-          cache-disabled: true
+      - name: Build Debug APK
+        run: ./gradlew assembleDebug --stacktrace
+        env:
+          KEYSTORE_FILE: ${{ env.KEYSTORE_PATH }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
 
-      - name: Clean git state
+      - name: Sign APK with apksigner
         run: |
-          git reset --hard HEAD
-          git clean -xfd
-          git status
-
-      - name: Debug info
-        run: |
-          echo "=== Debug Information ==="
-          java -version
-          echo "JAVA_HOME: $JAVA_HOME"
-          echo "ANDROID_HOME: $ANDROID_HOME"
-          echo "PATH: $PATH"
-          ls -la $ANDROID_HOME/
-          ./gradlew --version
-
-      - name: Build AAPS Debug
-        run: |
-          ./gradlew clean --stacktrace
+          BUILD_TOOLS_VERSION=$(ls $ANDROID_HOME/build-tools/ | sort -V | tail -n 1)
+          BUILD_TOOLS="$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION"
           
-          echo "=== Building AAPS ==="
-          # Pabandome įvairius variantus
-          for task in ":app:assembleAapsclientDebug" ":app:assembleDebug" "assembleDebug"; do
-            echo "Trying task: $task"
-            if ./gradlew $task --stacktrace --info --no-daemon; then
-              echo "Build successful with $task"
-              break
-            else
-              echo "Task $task failed"
-            fi
-          done
-
-      - name: Find built APK
-        id: find-apk
-        run: |
-          APK_PATH=$(find app/build -name "*.apk" -type f 2>/dev/null | grep -i "debug" | head -1)
+          APK_PATH=$(find . -name "*-debug.apk" -type f | head -1)
           
           if [ -z "$APK_PATH" ]; then
-            echo "ERROR: No APK found!"
-            find app/build -name "*.apk" -type f 2>/dev/null
+            echo "Error: No debug APK found"
+            find . -name "*.apk" -type f
             exit 1
           fi
           
-          echo "APK_PATH=$APK_PATH" >> $GITHUB_ENV
-          echo "Selected APK: $APK_PATH"
-
-      - name: Decode and verify debug.keystore
-        run: |
-          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > debug.keystore
-          
-          echo "=== Keystore Verification ==="
-          
-          # Patikriname SHA1
-          ACTUAL_SHA1=$(keytool -list -v -keystore debug.keystore \
-            -storepass "${{ secrets.KEY_PASSWORD }}" \
-            -alias "${{ secrets.KEY_ALIAS }}" 2>/dev/null | \
-            grep -i "SHA1:" | head -1 | awk '{print $2}' | tr -d ':' | tr '[:upper:]' '[:lower:]' || echo "")
-          
-          if [ -z "$ACTUAL_SHA1" ]; then
-            echo "❌ ERROR: Failed to read keystore"
-            exit 1
-          fi
-          
-          echo "SHA1 from keystore: $ACTUAL_SHA1"
-          echo "Expected SHA1: a8de9afa8551901e06d7312bc7ce33e24318ddbc"
-          
-          if [ "$ACTUAL_SHA1" = "a8de9afa8551901e06d7312bc7ce33e24318ddbc" ]; then
-            echo "✅ SUCCESS: Keystore matches!"
-          else
-            echo "❌ ERROR: Keystore mismatch!"
-            exit 1
-          fi
-
-      - name: Sign APK
-        run: |
-          BUILD_TOOLS_DIR="$ANDROID_HOME/build-tools/34.0.0"
-          echo "Using build-tools: $BUILD_TOOLS_DIR"
+          echo "Found APK: $APK_PATH"
           
           # Zipalign
-          $BUILD_TOOLS_DIR/zipalign -f -p 4 "$APK_PATH" aligned.apk
+          $BUILD_TOOLS/zipalign -v -p 4 "$APK_PATH" aligned.apk
           
           # Sign
-          $BUILD_TOOLS_DIR/apksigner sign \
-            --ks debug.keystore \
+          $BUILD_TOOLS/apksigner sign \
+            --ks ${{ env.KEYSTORE_PATH }} \
             --ks-key-alias "${{ secrets.KEY_ALIAS }}" \
             --ks-pass pass:"${{ secrets.KEY_PASSWORD }}" \
             --key-pass pass:"${{ secrets.KEY_PASSWORD }}" \
-            --out aaps-debug-signed.apk \
+            --out aaps-signed.apk \
             aligned.apk
           
           # Verify
-          $BUILD_TOOLS_DIR/apksigner verify --print-certs aaps-debug-signed.apk
+          $BUILD_TOOLS/apksigner verify -v aaps-signed.apk
+          
+          echo "APK signed successfully!"
 
-      - name: Upload signed APK
+      - name: Upload Signed APK
         uses: actions/upload-artifact@v4
         with:
-          name: aaps-debug-signed
-          path: aaps-debug-signed.apk
-          retention-days: 7
+          name: AAPS-debug-signed
+          path: aaps-signed.apk
+          retention-days: 30
