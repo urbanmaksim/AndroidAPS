@@ -1,0 +1,44 @@
+name: Build AndroidAPS Debug (artifact)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: [self-hosted, Windows, X64]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set JAVA_HOME to Android Studio JBR
+        shell: pwsh
+        run: |
+          $jbr = "C:\Program Files\Android\Android Studio\jbr"
+          if (!(Test-Path $jbr)) { $jbr = "C:\Users\maksi\AppData\Local\Programs\Android Studio\jbr" }
+          echo "JAVA_HOME=$jbr" | Out-File -FilePath $env:GITHUB_ENV -Append
+          echo "$jbr\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: Build Debug APK (no daemon, low memory)
+        shell: pwsh
+        run: |
+          .\gradlew :app:assembleDebug --no-daemon --no-parallel --max-workers=1 -x test -x lint -x check
+
+      - name: Find APK
+        shell: pwsh
+        run: |
+          $apk = Get-ChildItem -Recurse -Filter "*.apk" -Path "app\build\outputs\apk" |
+            Where-Object { $_.FullName -match "debug" } |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+
+          if (!$apk) { throw "APK not found under app\build\outputs\apk" }
+
+          Copy-Item $apk.FullName -Destination "aaps-debug.apk" -Force
+          Write-Host "Using APK: $($apk.FullName)"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aaps-debug
+          path: aaps-debug.apk
