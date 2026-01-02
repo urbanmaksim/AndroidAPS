@@ -32,9 +32,8 @@ jobs:
           type gradle.properties
 
       - name: Pick and build AAPS Client Debug
-        shell: poowershell -ExecutionPolicy Bypass
+        shell: powershell -ExecutionPolicy Bypass
         run: |
-          # surandam taską su aapsclient debug (skiriasi tarp repo versijų)
           $tasksText = .\gradlew -q :app:tasks --all
           $tasks = $tasksText -split "`n" | ForEach-Object { (($_ -split "\s+")[0]).Trim() }
           $cand = $tasks | Where-Object { $_ -match '^assemble.*aapsclient.*Debug$' } | Select-Object -First 1
