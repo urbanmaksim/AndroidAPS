@@ -8,16 +8,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 180
 
-    env:
-      # Gradle/JVM limits to avoid runner kill
-      GRADLE_OPTS: >
-        -Dorg.gradle.daemon=false
-        -Dorg.gradle.parallel=false
-        -Dorg.gradle.configureondemand=false
-        -Dorg.gradle.caching=false
-        -Dorg.gradle.jvmargs=-Xmx1536m -XX:MaxMetaspaceSize=512m -Dfile.encoding=UTF-8
-        -Dkotlin.daemon.jvm.options=-Xmx512m
-
     steps:
       - uses: actions/checkout@v4
 
@@ -26,7 +16,7 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      - name: Disable Gradle cache (stability)
+      - name: Setup Gradle (no cache)
         uses: gradle/actions/setup-gradle@v3
         with:
           cache-disabled: true
@@ -34,37 +24,32 @@ jobs:
       - name: Grant execute to gradlew
         run: chmod +x ./gradlew
 
-      - name: Show candidate assemble tasks
+      - name: Tune Gradle/Kotlin memory for CI
         shell: bash
         run: |
-          set -euo pipefail
-          ./gradlew -q :app:tasks --all | tr -d '\r' | awk '{print $1}' | grep -Ei '^assemble.*aapsclient.*Debug$' || true
-          echo "----"
-          echo "All assemble tasks (first 120):"
-          ./gradlew -q :app:tasks --all | tr -d '\r' | awk '{print $1}' | grep -E '^assemble' | head -n 120 || true
+          mkdir -p ~/.gradle
+          cat > ~/.gradle/gradle.properties <<'EOF'
+          org.gradle.daemon=false
+          org.gradle.parallel=false
+          org.gradle.workers.max=1
+          org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m -Dfile.encoding=UTF-8
+          kotlin.daemon.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m
+          kotlin.incremental=false
+          EOF
+          echo "==== ~/.gradle/gradle.properties ===="
+          cat ~/.gradle/gradle.properties
 
       - name: Pick and build AAPS Client Debug (min resources)
         shell: bash
         run: |
           set -euo pipefail
-
           TASKS="$(./gradlew -q :app:tasks --all | tr -d '\r' | awk '{print $1}')"
           CANDIDATE="$(echo "$TASKS" | grep -Ei '^assemble.*aapsclient.*Debug$' | head -n 1 || true)"
-
           if [ -z "$CANDIDATE" ]; then
-            echo "No assemble*aapsclient*Debug task found"
-            exit 1
+            echo "No assemble*aapsclient*Debug task found"; exit 1
           fi
-
           echo "Using task: :app:$CANDIDATE"
-
-          ./gradlew ":app:$CANDIDATE" \
-            --no-daemon \
-            --no-parallel \
-            --no-configuration-cache \
-            --max-workers=1 \
-            --stacktrace \
-            -x test -x lint -x check
+          ./gradlew ":app:$CANDIDATE" --no-daemon --no-parallel --max-workers=1 --stacktrace -x test -x lint -x check
 
       - name: Decode debug.keystore
         run: |
@@ -75,17 +60,14 @@ jobs:
         run: |
           BT=$(ls -1 "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)
           echo "BT=$BT" >> $GITHUB_ENV
-          echo "Using build-tools: $BT"
 
       - name: Find built APK (prefer aapsclient)
         shell: bash
         run: |
           set -euo pipefail
-          find . -maxdepth 12 -type f -name "*.apk" -path "*build/outputs/apk*" -print
           APK_IN=$(find . -maxdepth 12 -type f -name "*.apk" -path "*build/outputs/apk*" | grep -i "aapsclient" | head -n 1 || true)
           if [ -z "$APK_IN" ]; then
-            echo "No aapsclient APK found"
-            exit 1
+            echo "No aapsclient APK found"; exit 1
           fi
           echo "APK_IN=$APK_IN" >> $GITHUB_ENV
           echo "Using APK: $APK_IN"
@@ -93,7 +75,6 @@ jobs:
       - name: Align APK
         run: |
           "$ANDROID_HOME/build-tools/$BT/zipalign" -f 4 "$APK_IN" aaps-aligned.apk
-          ls -la aaps-aligned.apk
 
       - name: Sign APK (Android Debug)
         run: |
@@ -104,7 +85,6 @@ jobs:
             --key-pass pass:android \
             --out aaps-debug-signed.apk \
             aaps-aligned.apk
-          ls -la aaps-debug-signed.apk
 
       - name: Verify signature
         run: |
