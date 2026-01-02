@@ -12,11 +12,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up JDK 21
-        uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "21"
@@ -24,7 +22,6 @@ jobs:
       - name: Grant execute to gradlew
         run: chmod +x ./gradlew
 
-      # Build ALL debug APKs (AAPS may output APKs from different modules/flavors)
       - name: Build Debug APK
         run: ./gradlew assembleDebug
 
@@ -34,18 +31,16 @@ jobs:
 
       - name: Pick latest Android build-tools
         run: |
-          BT=$(ls -1 "${ANDROID_HOME}/build-tools" | sort -V | tail -n 1)
+          BT=$(ls -1 "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)
           echo "BT=$BT" >> $GITHUB_ENV
           echo "Using build-tools: $BT"
 
-      # Find the produced APK anywhere under build/outputs/apk
       - name: Find built APK
         run: |
-          echo "Searching for APK outputs..."
+          echo "Listing APK outputs:"
           find . -maxdepth 12 -type f -name "*.apk" -path "*build/outputs/apk*" -print
 
           APK_IN=$(find . -maxdepth 12 -type f -name "*.apk" -path "*build/outputs/apk*" | head -n 1)
-
           if [ -z "$APK_IN" ]; then
             echo "No APK found under *build/outputs/apk*"
             exit 1
@@ -56,11 +51,11 @@ jobs:
 
       - name: Align APK
         run: |
-          "${ANDROID_HOME}/build-tools/${BT}/zipalign" -f 4 "$APK_IN" aaps-aligned.apk
+          "$ANDROID_HOME/build-tools/$BT/zipalign" -f 4 "$APK_IN" aaps-aligned.apk
 
       - name: Sign APK
         run: |
-          "${ANDROID_HOME}/build-tools/${BT}/apksigner" sign \
+          "$ANDROID_HOME/build-tools/$BT/apksigner" sign \
             --ks debug.keystore \
             --ks-pass pass:${{ secrets.KEYSTORE_PASSWORD }} \
             --ks-key-alias ${{ secrets.KEY_ALIAS }} \
@@ -70,7 +65,7 @@ jobs:
 
       - name: Verify signature
         run: |
-          "${ANDROID_HOME}/build-tools/${BT}/apksigner" verify --print-certs aaps-debug-signed.apk
+          "$ANDROID_HOME/build-tools/$BT/apksigner" verify --print-certs aaps-debug-signed.apk
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
