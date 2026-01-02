@@ -13,7 +13,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set JAVA_HOME from Android Studio JBR
-        shell: powershell
+        shell: powershell -ExecutionPolicy Bypass
         run: |
           $jbr1 = "C:\Program Files\Android\Android Studio\jbr"
           $jbr2 = "C:\Users\maksi\AppData\Local\Programs\Android Studio\jbr"
@@ -23,7 +23,7 @@ jobs:
           java -version
 
       - name: Increase Gradle + Kotlin memory (local runner)
-        shell: powershell
+        shell: powershell -ExecutionPolicy Bypass
         run: |
           Add-Content -Path gradle.properties -Value "`norg.gradle.jvmargs=-Xmx6g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8"
           Add-Content -Path gradle.properties -Value "kotlin.daemon.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g"
@@ -32,7 +32,7 @@ jobs:
           type gradle.properties
 
       - name: Pick and build AAPS Client Debug
-        shell: powershell
+        shell: poowershell -ExecutionPolicy Bypass
         run: |
           # surandam taską su aapsclient debug (skiriasi tarp repo versijų)
           $tasksText = .\gradlew -q :app:tasks --all
@@ -47,7 +47,7 @@ jobs:
           .\gradlew ":app:$cand" --no-daemon --no-parallel --max-workers=1 --stacktrace -x test -x lint -x check
 
       - name: Find built APK (aapsclient)
-        shell: powershell
+        shell: powershell -ExecutionPolicy Bypass
         run: |
           $apks = Get-ChildItem -Recurse -Filter *.apk -Path . | Where-Object { $_.FullName -match "build\\outputs\\apk" -and $_.FullName -match "aapsclient" }
           $apk = $apks | Select-Object -First 1
