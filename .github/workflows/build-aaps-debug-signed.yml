@@ -6,7 +6,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     steps:
       - name: Checkout repository
@@ -17,7 +17,6 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: '17'
-          cache: 'gradle'
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
@@ -25,24 +24,24 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x ./gradlew
 
+      - name: Clean Gradle cache
+        run: |
+          rm -rf ~/.gradle/caches
+          ./gradlew --version
+
       - name: Decode Keystore
         run: |
           echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > $GITHUB_WORKSPACE/keystore.jks
           echo "KEYSTORE_PATH=$GITHUB_WORKSPACE/keystore.jks" >> $GITHUB_ENV
 
       - name: Build Debug APK
-        run: ./gradlew assembleDebug --stacktrace
+        run: ./gradlew assembleDebug --stacktrace --no-daemon
         env:
-          KEYSTORE_FILE: ${{ env.KEYSTORE_PATH }}
-          KEYSTORE_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          JAVA_HOME: /opt/hostedtoolcache/Java_Temurin-Hotspot_jdk/17.0.17-10/x64
+          GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx4g"
 
-      - name: Sign APK with apksigner
+      - name: Find and verify APK
         run: |
-          BUILD_TOOLS_VERSION=$(ls $ANDROID_HOME/build-tools/ | sort -V | tail -n 1)
-          BUILD_TOOLS="$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION"
-          
           APK_PATH=$(find . -name "*-debug.apk" -type f | head -1)
           
           if [ -z "$APK_PATH" ]; then
@@ -51,24 +50,45 @@ jobs:
             exit 1
           fi
           
+          echo "APK_PATH=$APK_PATH" >> $GITHUB_ENV
           echo "Found APK: $APK_PATH"
+          ls -lh "$APK_PATH"
+
+      - name: Sign APK with apksigner
+        run: |
+          BUILD_TOOLS_DIR="$ANDROID_HOME/build-tools/34.0.0"
+          
+          # Check if build-tools exists, if not find latest
+          if [ ! -d "$BUILD_TOOLS_DIR" ]; then
+            BUILD_TOOLS_DIR=$(ls -d $ANDROID_HOME/build-tools/* | sort -V | tail -n 1)
+          fi
+          
+          echo "Using build-tools: $BUILD_TOOLS_DIR"
+          
+          APK_UNSIGNED="${{ env.APK_PATH }}"
+          APK_ALIGNED="aligned.apk"
+          APK_SIGNED="aaps-signed.apk"
           
           # Zipalign
-          $BUILD_TOOLS/zipalign -v -p 4 "$APK_PATH" aligned.apk
+          echo "Running zipalign..."
+          $BUILD_TOOLS_DIR/zipalign -v -p 4 "$APK_UNSIGNED" "$APK_ALIGNED"
           
-          # Sign
-          $BUILD_TOOLS/apksigner sign \
+          # Sign with apksigner
+          echo "Signing APK..."
+          $BUILD_TOOLS_DIR/apksigner sign \
             --ks ${{ env.KEYSTORE_PATH }} \
             --ks-key-alias "${{ secrets.KEY_ALIAS }}" \
             --ks-pass pass:"${{ secrets.KEY_PASSWORD }}" \
             --key-pass pass:"${{ secrets.KEY_PASSWORD }}" \
-            --out aaps-signed.apk \
-            aligned.apk
+            --out "$APK_SIGNED" \
+            "$APK_ALIGNED"
           
-          # Verify
-          $BUILD_TOOLS/apksigner verify -v aaps-signed.apk
+          # Verify signature
+          echo "Verifying signature..."
+          $BUILD_TOOLS_DIR/apksigner verify -v "$APK_SIGNED"
           
-          echo "APK signed successfully!"
+          ls -lh "$APK_SIGNED"
+          echo "✅ APK signed successfully!"
 
       - name: Upload Signed APK
         uses: actions/upload-artifact@v4
@@ -76,3 +96,13 @@ jobs:
           name: AAPS-debug-signed
           path: aaps-signed.apk
           retention-days: 30
+
+      - name: Display build summary
+        if: always()
+        run: |
+          echo "=== Build Summary ==="
+          echo "Java Version:"
+          java -version
+          echo ""
+          echo "Gradle Version:"
+          ./gradlew --version
