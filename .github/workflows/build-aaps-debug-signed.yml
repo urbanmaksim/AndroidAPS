@@ -10,6 +10,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
 
     steps:
       - uses: actions/checkout@v4
@@ -19,15 +20,19 @@ jobs:
           distribution: temurin
           java-version: "21"
 
+      - name: Setup Gradle cache
+        uses: gradle/actions/setup-gradle@v3
+
       - name: Grant execute to gradlew
         run: chmod +x ./gradlew
 
       - name: Build Debug APK
-        run: ./gradlew assembleDebug
+        run: ./gradlew assembleDebug --no-daemon --stacktrace --warning-mode all
 
-      - name: Decode keystore
+      - name: Decode debug.keystore (from secrets)
         run: |
           echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > debug.keystore
+          ls -la debug.keystore
 
       - name: Pick latest Android build-tools
         run: |
@@ -35,33 +40,39 @@ jobs:
           echo "BT=$BT" >> $GITHUB_ENV
           echo "Using build-tools: $BT"
 
-      - name: Find built APK
+      - name: Find built APK (prefer AAPS client)
         run: |
           echo "Listing APK outputs:"
           find . -maxdepth 12 -type f -name "*.apk" -path "*build/outputs/apk*" -print
 
-          APK_IN=$(find . -maxdepth 12 -type f -name "*.apk" -path "*build/outputs/apk*" | head -n 1)
+          APK_IN=$(find . -maxdepth 12 -type f -name "*.apk" -path "*build/outputs/apk*" | grep -i "aapsclient" | head -n 1 || true)
+          if [ -z "$APK_IN" ]; then
+            APK_IN=$(find . -maxdepth 12 -type f -name "*.apk" -path "*build/outputs/apk*" | head -n 1)
+          fi
+
           if [ -z "$APK_IN" ]; then
             echo "No APK found under *build/outputs/apk*"
             exit 1
           fi
 
-          echo "APK_IN=$APK_IN" >> $GITHUB_ENV
           echo "Using APK: $APK_IN"
+          echo "APK_IN=$APK_IN" >> $GITHUB_ENV
 
       - name: Align APK
         run: |
           "$ANDROID_HOME/build-tools/$BT/zipalign" -f 4 "$APK_IN" aaps-aligned.apk
+          ls -la aaps-aligned.apk
 
-      - name: Sign APK
+      - name: Sign APK (Android Debug)
         run: |
           "$ANDROID_HOME/build-tools/$BT/apksigner" sign \
             --ks debug.keystore \
-            --ks-pass pass:${{ secrets.KEYSTORE_PASSWORD }} \
-            --ks-key-alias ${{ secrets.KEY_ALIAS }} \
-            --key-pass pass:${{ secrets.KEY_PASSWORD }} \
+            --ks-key-alias androiddebugkey \
+            --ks-pass pass:android \
+            --key-pass pass:android \
             --out aaps-debug-signed.apk \
             aaps-aligned.apk
+          ls -la aaps-debug-signed.apk
 
       - name: Verify signature
         run: |
