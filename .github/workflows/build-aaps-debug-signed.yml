@@ -19,55 +19,60 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Setup Android SDK (with JDK 17 compatibility)
+      - name: Setup Android SDK (use existing)
         run: |
+          # Runner jau turi SDK, nustatome kintamuosius
           export ANDROID_HOME=/usr/local/lib/android/sdk
           echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
           
-          # Išvalyti seną SDK, jei yra
-          if [ -d "$ANDROID_HOME" ]; then
-            echo "Cleaning existing Android SDK..."
-            rm -rf "$ANDROID_HOME"
+          # Patikriname, ar yra cmdline-tools
+          if [ ! -d "$ANDROID_HOME/cmdline-tools" ]; then
+            echo "Warning: cmdline-tools not found, downloading..."
+            # Atsisiųsti tik cmdline-tools jei nėra
+            wget -q https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip
+            unzip -q commandlinetools-linux-9477386_latest.zip
+            mkdir -p $ANDROID_HOME/cmdline-tools
+            mv cmdline-tools $ANDROID_HOME/cmdline-tools/latest
+            rm -f commandlinetools-linux-9477386_latest.zip
           fi
           
-          sudo mkdir -p $ANDROID_HOME
-          sudo chmod -R 777 $ANDROID_HOME
-          
-          # Download command line tools version that supports JDK 17
-          wget -q https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip
-          unzip -q commandlinetools-linux-9477386_latest.zip
-          
-          # Sukurti katalogų struktūrą
-          mkdir -p $ANDROID_HOME/cmdline-tools
-          
-          # Perkelti cmdline-tools į tinkamą vietą
-          # Atkreipkite dėmesį: cmdline-tools kataloge yra bin, lib, source.properties
-          # Jį reikia perkelti į cmdline-tools/latest
-          mv cmdline-tools $ANDROID_HOME/cmdline-tools/latest
-          
-          rm -f commandlinetools-linux-9477386_latest.zip
-          
+          # Įtraukiame į PATH
           echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> $GITHUB_PATH
           echo "$ANDROID_HOME/platform-tools" >> $GITHUB_PATH
           
-          # Priimti licencijas (naudojame pipe)
+          # Priimame licencijas
           echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null 2>&1 || true
           
-          # Įdiegti reikiamus paketus
-          echo "Installing platform-tools..."
-          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platform-tools" --verbose
+          # Įdiegiame trūkstamus paketus
+          echo "Checking installed packages..."
           
-          echo "Installing Android SDK Platform 34..."
-          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-34" --verbose
+          # Tikriname, ar yra platform-tools
+          if [ ! -d "$ANDROID_HOME/platform-tools" ]; then
+            echo "Installing platform-tools..."
+            $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platform-tools"
+          fi
           
-          echo "Installing build-tools 34.0.0..."
-          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "build-tools;34.0.0" --verbose
+          # Tikriname, ar yra Android 34 platform
+          if [ ! -d "$ANDROID_HOME/platforms/android-34" ]; then
+            echo "Installing Android SDK Platform 34..."
+            $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-34"
+          fi
           
-          # NDK gali būti reikalingas
-          echo "Installing NDK..."
-          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "ndk;25.2.9519653" --verbose || echo "NDK installation failed or already installed"
+          # Tikriname, ar yra build-tools 34.0.0
+          if [ ! -d "$ANDROID_HOME/build-tools/34.0.0" ]; then
+            echo "Installing build-tools 34.0.0..."
+            $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "build-tools;34.0.0"
+          fi
+          
+          # NDK (optional)
+          if [ ! -d "$ANDROID_HOME/ndk" ] && [ ! -d "$ANDROID_HOME/ndk/25.2.9519653" ]; then
+            echo "Installing NDK..."
+            $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "ndk;25.2.9519653" || echo "NDK installation skipped"
+          fi
           
           echo "Android SDK setup complete"
+          echo "Installed packages:"
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --list | grep -E "Installed packages:" -A 20
 
       - name: Setup Gradle (no cache)
         uses: gradle/actions/setup-gradle@v3
@@ -86,71 +91,62 @@ jobs:
           java -version
           echo "JAVA_HOME: $JAVA_HOME"
           echo "ANDROID_HOME: $ANDROID_HOME"
-          ls -la $ANDROID_HOME/cmdline-tools/latest/
+          echo "PATH: $PATH"
+          ls -la $ANDROID_HOME/
           ./gradlew --version
 
       - name: Build AAPS Debug
         run: |
-          # Išvalyti
           ./gradlew clean --stacktrace
           
           echo "=== Building AAPS ==="
-          # Bandyti įvairius build variantus
-          if ./gradlew :app:assembleAapsclientDebug --stacktrace --info; then
-            echo "Build successful with :app:assembleAapsclientDebug"
-          elif ./gradlew :app:assembleDebug --stacktrace --info; then
-            echo "Build successful with :app:assembleDebug"
-          elif ./gradlew assembleDebug --stacktrace --info; then
-            echo "Build successful with assembleDebug"
-          else
-            echo "All build attempts failed"
-            echo "=== Listing tasks ==="
-            ./gradlew tasks --all | grep assemble || true
-            exit 1
-          fi
+          # Pabandome įvairius variantus
+          for task in ":app:assembleAapsclientDebug" ":app:assembleDebug" "assembleDebug"; do
+            echo "Trying task: $task"
+            if ./gradlew $task --stacktrace --info --no-daemon; then
+              echo "Build successful with $task"
+              break
+            else
+              echo "Task $task failed"
+            fi
+          done
 
       - name: Find built APK
         id: find-apk
         run: |
-          # Ieškoti APK
           APK_PATH=$(find app/build -name "*.apk" -type f 2>/dev/null | grep -i "debug" | head -1)
           
           if [ -z "$APK_PATH" ]; then
             echo "ERROR: No APK found!"
-            echo "Checking build outputs..."
-            find app/build -type f -name "*.apk" 2>/dev/null
-            find app/build/outputs -type f 2>/dev/null | head -20
+            find app/build -name "*.apk" -type f 2>/dev/null
             exit 1
           fi
           
           echo "APK_PATH=$APK_PATH" >> $GITHUB_ENV
-          echo "Selected APK: $APK_PATH ($(stat -c%s "$APK_PATH") bytes)"
+          echo "Selected APK: $APK_PATH"
 
       - name: Decode and verify debug.keystore
         run: |
           echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > debug.keystore
           
           echo "=== Keystore Verification ==="
-          echo "File size: $(wc -c < debug.keystore) bytes"
           
-          # Patikrinti keystore
-          if ! keytool -list -v -keystore debug.keystore \
-            -storepass "${{ secrets.KEY_PASSWORD }}" \
-            -alias "${{ secrets.KEY_ALTAS }}" 2>/dev/null; then
-            echo "❌ ERROR: Failed to read keystore"
-            exit 1
-          fi
-          
+          # Patikriname SHA1
           ACTUAL_SHA1=$(keytool -list -v -keystore debug.keystore \
             -storepass "${{ secrets.KEY_PASSWORD }}" \
             -alias "${{ secrets.KEY_ALTAS }}" 2>/dev/null | \
-            grep -i "SHA1:" | head -1 | awk '{print $2}' | tr -d ':' | tr '[:upper:]' '[:lower:]')
+            grep -i "SHA1:" | head -1 | awk '{print $2}' | tr -d ':' | tr '[:upper:]' '[:lower:]' || echo "")
+          
+          if [ -z "$ACTUAL_SHA1" ]; then
+            echo "❌ ERROR: Failed to read keystore"
+            exit 1
+          fi
           
           echo "SHA1 from keystore: $ACTUAL_SHA1"
           echo "Expected SHA1: a8de9afa8551901e06d7312bc7ce33e24318ddbc"
           
           if [ "$ACTUAL_SHA1" = "a8de9afa8551901e06d7312bc7ce33e24318ddbc" ]; then
-            echo "✅ SUCCESS: Keystore matches! APK will be updatable."
+            echo "✅ SUCCESS: Keystore matches!"
           else
             echo "❌ ERROR: Keystore mismatch!"
             exit 1
@@ -161,10 +157,10 @@ jobs:
           BUILD_TOOLS_DIR="$ANDROID_HOME/build-tools/34.0.0"
           echo "Using build-tools: $BUILD_TOOLS_DIR"
           
-          # Align APK
+          # Zipalign
           $BUILD_TOOLS_DIR/zipalign -f -p 4 "$APK_PATH" aligned.apk
           
-          # Sign APK
+          # Sign
           $BUILD_TOOLS_DIR/apksigner sign \
             --ks debug.keystore \
             --ks-key-alias "${{ secrets.KEY_ALTAS }}" \
@@ -173,11 +169,8 @@ jobs:
             --out aaps-debug-signed.apk \
             aligned.apk
           
-          echo "=== Signed APK Info ==="
-          ls -la aaps-debug-signed.apk
-          
           # Verify
-          $BUILD_TOOLS_DIR/apksigner verify --verbose aaps-debug-signed.apk
+          $BUILD_TOOLS_DIR/apksigner verify --print-certs aaps-debug-signed.apk
 
       - name: Upload signed APK
         uses: actions/upload-artifact@v4
