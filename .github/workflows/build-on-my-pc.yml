@@ -1,0 +1,66 @@
+name: Build AndroidAPS on my PC (debug update)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 240
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set JAVA_HOME from Android Studio JBR
+        shell: powershell
+        run: |
+          $jbr1 = "C:\Program Files\Android\Android Studio\jbr"
+          $jbr2 = "C:\Users\maksi\AppData\Local\Programs\Android Studio\jbr"
+          if (Test-Path $jbr1) { $jbr = $jbr1 } elseif (Test-Path $jbr2) { $jbr = $jbr2 } else { throw "Android Studio JBR not found" }
+          "JAVA_HOME=$jbr" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "$jbr\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          java -version
+
+      - name: Increase Gradle + Kotlin memory (local runner)
+        shell: powershell
+        run: |
+          Add-Content -Path gradle.properties -Value "`norg.gradle.jvmargs=-Xmx6g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8"
+          Add-Content -Path gradle.properties -Value "kotlin.daemon.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g"
+          Add-Content -Path gradle.properties -Value "org.gradle.workers.max=1"
+          Add-Content -Path gradle.properties -Value "org.gradle.parallel=false"
+          type gradle.properties
+
+      - name: Pick and build AAPS Client Debug
+        shell: powershell
+        run: |
+          # surandam taską su aapsclient debug (skiriasi tarp repo versijų)
+          $tasksText = .\gradlew -q :app:tasks --all
+          $tasks = $tasksText -split "`n" | ForEach-Object { (($_ -split "\s+")[0]).Trim() }
+          $cand = $tasks | Where-Object { $_ -match '^assemble.*aapsclient.*Debug$' } | Select-Object -First 1
+          if (-not $cand) {
+            Write-Host "No assemble*aapsclient*Debug found. Showing assemble tasks:"
+            $tasks | Where-Object { $_ -match '^assemble' } | Select-Object -First 200
+            throw "Missing AAPS client debug assemble task"
+          }
+          Write-Host "Using task: :app:$cand"
+          .\gradlew ":app:$cand" --no-daemon --no-parallel --max-workers=1 --stacktrace -x test -x lint -x check
+
+      - name: Find built APK (aapsclient)
+        shell: powershell
+        run: |
+          $apks = Get-ChildItem -Recurse -Filter *.apk -Path . | Where-Object { $_.FullName -match "build\\outputs\\apk" -and $_.FullName -match "aapsclient" }
+          $apk = $apks | Select-Object -First 1
+          if (-not $apk) {
+            Write-Host "APK list under build/outputs/apk:"
+            Get-ChildItem -Recurse -Path . -Filter *.apk | Where-Object { $_.FullName -match "build\\outputs\\apk" } | Select-Object FullName
+            throw "APK not found"
+          }
+          "APK_PATH=$($apk.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "APK: $($apk.FullName)"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aaps-debug-apk
+          path: ${{ env.APK_PATH }}
