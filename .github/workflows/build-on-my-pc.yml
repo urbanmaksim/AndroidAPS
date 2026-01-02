@@ -9,8 +9,19 @@ jobs:
     timeout-minutes: 240
 
     steps:
-      - name: Checkout
+      - name: Checkout (clean)
         uses: actions/checkout@v4
+        with:
+          clean: true
+          fetch-depth: 0
+
+      - name: Force clean working tree (AAPS requires clean git)
+        shell: pwsh
+        run: |
+          git status --porcelain
+          git reset --hard
+          git clean -xfd
+          git status --porcelain
 
       - name: Set JAVA_HOME from Android Studio JBR
         shell: pwsh
@@ -23,7 +34,6 @@ jobs:
 
           "JAVA_HOME=$jbr" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "$jbr\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
           java -version
 
       - name: Increase Gradle + Kotlin memory
@@ -55,12 +65,12 @@ jobs:
         shell: pwsh
         run: |
           $apk = Get-ChildItem -Recurse -Filter *.apk | Where-Object {
-            $_.FullName -match "build\\outputs\\apk" -and
-            $_.FullName -match "aapsclient"
+            $_.FullName -match "build\\outputs\\apk" -and $_.FullName -match "aapsclient"
           } | Select-Object -First 1
 
           if (-not $apk) {
-            Get-ChildItem -Recurse -Filter *.apk
+            Write-Host "APK list under build/outputs/apk:"
+            Get-ChildItem -Recurse -Filter *.apk | Where-Object { $_.FullName -match "build\\outputs\\apk" } | Select-Object FullName
             throw "APK not found"
           }
 
