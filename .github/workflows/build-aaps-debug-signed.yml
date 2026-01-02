@@ -13,84 +13,60 @@ jobs:
 
       - uses: actions/setup-java@v4
         with:
-          distribution: temurin
-          java-version: "21"
+          distribution: 'temurin'
+          java-version: '11'
 
-      - name: Setup Gradle (no cache)
-        uses: gradle/actions/setup-gradle@v3
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
         with:
-          cache-disabled: true
+          api-level: 34
+          build-tools: 34.0.0
 
       - name: Grant execute to gradlew
         run: chmod +x ./gradlew
 
-      - name: Tune Gradle/Kotlin memory for CI
-        shell: bash
+      - name: Clean git state
         run: |
-          mkdir -p ~/.gradle
-          cat > ~/.gradle/gradle.properties <<'EOF'
-          org.gradle.daemon=false
-          org.gradle.parallel=false
-          org.gradle.workers.max=1
-          org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m -Dfile.encoding=UTF-8
-          kotlin.daemon.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m
-          kotlin.incremental=false
-          EOF
-          echo "==== ~/.gradle/gradle.properties ===="
-          cat ~/.gradle/gradle.properties
+          git reset --hard
+          git clean -xfd
 
-      - name: Pick and build AAPS Client Debug (min resources)
-        shell: bash
+      - name: Build AAPS
         run: |
-          set -euo pipefail
-          TASKS="$(./gradlew -q :app:tasks --all | tr -d '\r' | awk '{print $1}')"
-          CANDIDATE="$(echo "$TASKS" | grep -Ei '^assemble.*aapsclient.*Debug$' | head -n 1 || true)"
-          if [ -z "$CANDIDATE" ]; then
-            echo "No assemble*aapsclient*Debug task found"; exit 1
+          ./gradlew clean :app:assembleAapsclientDebug --stacktrace || ./gradlew clean :app:assembleDebug --stacktrace
+
+      - name: Find APK
+        id: find-apk
+        run: |
+          APK_PATH=$(find app/build/outputs/apk -name "*.apk" -type f | head -1)
+          if [ -z "$APK_PATH" ]; then
+            APK_PATH=$(find . -name "*.apk" -type f | grep -i "debug" | head -1)
           fi
-          echo "Using task: :app:$CANDIDATE"
-          ./gradlew ":app:$CANDIDATE" --no-daemon --no-parallel --max-workers=1 --stacktrace -x test -x lint -x check
+          echo "APK_PATH=$APK_PATH" >> $GITHUB_ENV
+          echo "Found APK: $APK_PATH"
 
-      - name: Decode debug.keystore
+      - name: Restore your debug.keystore
         run: |
-          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > debug.keystore
-          ls -la debug.keystore
+          # Naudojate savo esamą keystore iš Android Studio
+          echo "${{ secrets.DEBUG_KEYSTORE_BASE64 }}" | base64 -d > debug.keystore
+          keytool -list -v -keystore debug.keystore -storepass android -alias androiddebugkey
 
-      - name: Pick latest Android build-tools
+      - name: Sign APK with your keystore
         run: |
-          BT=$(ls -1 "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)
-          echo "BT=$BT" >> $GITHUB_ENV
-
-      - name: Find built APK (prefer aapsclient)
-        shell: bash
-        run: |
-          set -euo pipefail
-          APK_IN=$(find . -maxdepth 12 -type f -name "*.apk" -path "*build/outputs/apk*" | grep -i "aapsclient" | head -n 1 || true)
-          if [ -z "$APK_IN" ]; then
-            echo "No aapsclient APK found"; exit 1
-          fi
-          echo "APK_IN=$APK_IN" >> $GITHUB_ENV
-          echo "Using APK: $APK_IN"
-
-      - name: Align APK
-        run: |
-          "$ANDROID_HOME/build-tools/$BT/zipalign" -f 4 "$APK_IN" aaps-aligned.apk
-
-      - name: Sign APK (Android Debug)
-        run: |
-          "$ANDROID_HOME/build-tools/$BT/apksigner" sign \
+          BUILD_TOOLS_DIR=$(find $ANDROID_HOME/build-tools -maxdepth 1 -type d | sort -V | tail -1)
+          
+          $BUILD_TOOLS_DIR/zipalign -f -p 4 "$APK_PATH" app-aligned.apk
+          
+          $BUILD_TOOLS_DIR/apksigner sign \
             --ks debug.keystore \
             --ks-key-alias androiddebugkey \
             --ks-pass pass:android \
             --key-pass pass:android \
             --out aaps-debug-signed.apk \
-            aaps-aligned.apk
+            app-aligned.apk
+          
+          $BUILD_TOOLS_DIR/apksigner verify --verbose aaps-debug-signed.apk
 
-      - name: Verify signature
-        run: |
-          "$ANDROID_HOME/build-tools/$BT/apksigner" verify --print-certs aaps-debug-signed.apk
-
-      - name: Upload artifact
+      - name: Upload signed APK
         uses: actions/upload-artifact@v4
         with:
           name: aaps-debug-signed
