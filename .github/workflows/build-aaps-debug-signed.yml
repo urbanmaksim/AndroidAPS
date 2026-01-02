@@ -11,63 +11,115 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # AndroidAPS requires Java 11
       - uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
-          java-version: '11'
+          distribution: temurin
+          java-version: "11"
 
+      # Setup Android SDK
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
           api-level: 34
           build-tools: 34.0.0
+          packages: |
+            platform-tools
+            platforms;android-34
+            build-tools;34.0.0
+            cmdline-tools;latest
+
+      - name: Setup Gradle (no cache)
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          cache-disabled: true
 
       - name: Grant execute to gradlew
         run: chmod +x ./gradlew
 
+      # AAPS requires clean git state
       - name: Clean git state
         run: |
           git reset --hard
           git clean -xfd
 
-      - name: Build AAPS
+      # Tune Gradle memory
+      - name: Tune Gradle/Kotlin memory for CI
         run: |
-          ./gradlew clean :app:assembleAapsclientDebug --stacktrace || ./gradlew clean :app:assembleDebug --stacktrace
+          mkdir -p ~/.gradle
+          cat > ~/.gradle/gradle.properties <<'EOF'
+          org.gradle.daemon=false
+          org.gradle.parallel=false
+          org.gradle.workers.max=1
+          org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m -Dfile.encoding=UTF-8
+          kotlin.daemon.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m
+          kotlin.incremental=false
+          EOF
 
-      - name: Find APK
+      # Build AAPS
+      - name: Build AAPS Debug
+        run: |
+          ./gradlew clean
+          # Try the specific task, fallback to assembleDebug
+          ./gradlew :app:assembleAapsclientDebug || ./gradlew :app:assembleDebug
+
+      # Find the built APK
+      - name: Find built APK
         id: find-apk
         run: |
           APK_PATH=$(find app/build/outputs/apk -name "*.apk" -type f | head -1)
           if [ -z "$APK_PATH" ]; then
-            APK_PATH=$(find . -name "*.apk" -type f | grep -i "debug" | head -1)
+            APK_PATH=$(find . -name "*.apk" -type f | grep -i debug | head -1)
+          fi
+          if [ -z "$APK_PATH" ]; then
+            echo "APK not found!"
+            exit 1
           fi
           echo "APK_PATH=$APK_PATH" >> $GITHUB_ENV
           echo "Found APK: $APK_PATH"
 
-      - name: Restore your debug.keystore
+      # Decode the keystore from secret (use the existing one)
+      - name: Decode debug.keystore
         run: |
-          # Naudojate savo esamą keystore iš Android Studio
-          echo "${{ secrets.DEBUG_KEYSTORE_BASE64 }}" | base64 -d > debug.keystore
-          keytool -list -v -keystore debug.keystore -storepass android -alias androiddebugkey
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > debug.keystore
+          # Check the keystore info
+          keytool -list -v -keystore debug.keystore -storepass "${{ secrets.KEY_PASSWORD || 'android' }}" -alias "${{ secrets.KEY_ALTAS || 'androiddebugkey' }}" || true
 
-      - name: Sign APK with your keystore
+      # Pick latest Android build-tools
+      - name: Pick latest Android build-tools
         run: |
-          BUILD_TOOLS_DIR=$(find $ANDROID_HOME/build-tools -maxdepth 1 -type d | sort -V | tail -1)
-          
-          $BUILD_TOOLS_DIR/zipalign -f -p 4 "$APK_PATH" app-aligned.apk
-          
-          $BUILD_TOOLS_DIR/apksigner sign \
+          # Use the build-tools version from the SDK setup
+          BT=$(ls -1 "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)
+          echo "BT=$BT" >> $GITHUB_ENV
+
+      # Align APK
+      - name: Align APK
+        run: |
+          "$ANDROID_HOME/build-tools/$BT/zipalign" -f 4 "$APK_PATH" aaps-aligned.apk
+
+      # Sign APK with the decoded keystore
+      - name: Sign APK
+        run: |
+          "$ANDROID_HOME/build-tools/$BT/apksigner" sign \
             --ks debug.keystore \
-            --ks-key-alias androiddebugkey \
-            --ks-pass pass:android \
-            --key-pass pass:android \
+            --ks-key-alias "${{ secrets.KEY_ALTAS || 'androiddebugkey' }}" \
+            --ks-pass pass:"${{ secrets.KEY_PASSWORD || 'android' }}" \
+            --key-pass pass:"${{ secrets.KEY_PASSWORD || 'android' }}" \
             --out aaps-debug-signed.apk \
-            app-aligned.apk
-          
-          $BUILD_TOOLS_DIR/apksigner verify --verbose aaps-debug-signed.apk
+            aaps-aligned.apk
 
-      - name: Upload signed APK
+      # Verify signature
+      - name: Verify signature
+        run: |
+          "$ANDROID_HOME/build-tools/$BT/apksigner" verify --print-certs aaps-debug-signed.apk
+          # Also print MD5 to compare with existing APK
+          echo "Checking MD5:"
+          keytool -printcert -jarfile aaps-debug-signed.apk | grep -i md5
+
+      # Upload artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: aaps-debug-signed
           path: aaps-debug-signed.apk
+          retention-days: 7
