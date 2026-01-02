@@ -24,34 +24,55 @@ jobs:
           export ANDROID_HOME=/usr/local/lib/android/sdk
           echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
           
+          # Išvalyti seną SDK, jei yra
+          if [ -d "$ANDROID_HOME" ]; then
+            echo "Cleaning existing Android SDK..."
+            rm -rf "$ANDROID_HOME"
+          fi
+          
           sudo mkdir -p $ANDROID_HOME
           sudo chmod -R 777 $ANDROID_HOME
           
           # Download command line tools version that supports JDK 17
           wget -q https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip
           unzip -q commandlinetools-linux-9477386_latest.zip
-          mkdir -p $ANDROID_HOME/cmdline-tools/latest
-          mv cmdline-tools/* $ANDROID_HOME/cmdline-tools/latest/
-          rm -rf cmdline-tools commandlinetools-linux-9477386_latest.zip
+          
+          # Sukurti katalogų struktūrą
+          mkdir -p $ANDROID_HOME/cmdline-tools
+          
+          # Perkelti cmdline-tools į tinkamą vietą
+          # Atkreipkite dėmesį: cmdline-tools kataloge yra bin, lib, source.properties
+          # Jį reikia perkelti į cmdline-tools/latest
+          mv cmdline-tools $ANDROID_HOME/cmdline-tools/latest
+          
+          rm -f commandlinetools-linux-9477386_latest.zip
           
           echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> $GITHUB_PATH
           echo "$ANDROID_HOME/platform-tools" >> $GITHUB_PATH
           
-          # Accept licenses
-          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null 2>&1 || true
+          # Priimti licencijas (naudojame pipe)
+          echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null 2>&1 || true
           
-          # Install required packages
-          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platform-tools"
-          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-34"
-          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "build-tools;34.0.0"
-          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "ndk;25.2.9519653"  # AAPS might need NDK
+          # Įdiegti reikiamus paketus
+          echo "Installing platform-tools..."
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platform-tools" --verbose
+          
+          echo "Installing Android SDK Platform 34..."
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-34" --verbose
+          
+          echo "Installing build-tools 34.0.0..."
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "build-tools;34.0.0" --verbose
+          
+          # NDK gali būti reikalingas
+          echo "Installing NDK..."
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "ndk;25.2.9519653" --verbose || echo "NDK installation failed or already installed"
           
           echo "Android SDK setup complete"
 
       - name: Setup Gradle (no cache)
         uses: gradle/actions/setup-gradle@v3
         with:
-          cache-disabled: true  # Disable cache due to GitHub issues
+          cache-disabled: true
 
       - name: Clean git state
         run: |
@@ -65,53 +86,39 @@ jobs:
           java -version
           echo "JAVA_HOME: $JAVA_HOME"
           echo "ANDROID_HOME: $ANDROID_HOME"
-          ls -la $ANDROID_HOME
+          ls -la $ANDROID_HOME/cmdline-tools/latest/
           ./gradlew --version
 
-      - name: Build AAPS Debug (with full logging)
+      - name: Build AAPS Debug
         run: |
-          # Clean first
+          # Išvalyti
           ./gradlew clean --stacktrace
           
-          echo "=== Listing assemble tasks ==="
-          ./gradlew tasks --all | grep assemble || true
-          
           echo "=== Building AAPS ==="
-          # Try to build with detailed logging
-          ./gradlew :app:assembleAapsclientDebug \
-            --stacktrace \
-            --info \
-            --no-daemon \
-            --no-parallel \
-            --max-workers=1 2>&1 | tee build.log || {
-            echo "Build failed, checking for alternatives..."
-            
-            # Try alternative task names
-            if ./gradlew :app:assembleDebug --stacktrace --info; then
-              echo "Build successful with assembleDebug"
-            elif ./gradlew assembleDebug --stacktrace --info; then
-              echo "Build successful with assembleDebug (root)"
-            else
-              echo "All build attempts failed"
-              echo "=== Last 100 lines of build.log ==="
-              tail -100 build.log
-              exit 1
-            fi
-          }
+          # Bandyti įvairius build variantus
+          if ./gradlew :app:assembleAapsclientDebug --stacktrace --info; then
+            echo "Build successful with :app:assembleAapsclientDebug"
+          elif ./gradlew :app:assembleDebug --stacktrace --info; then
+            echo "Build successful with :app:assembleDebug"
+          elif ./gradlew assembleDebug --stacktrace --info; then
+            echo "Build successful with assembleDebug"
+          else
+            echo "All build attempts failed"
+            echo "=== Listing tasks ==="
+            ./gradlew tasks --all | grep assemble || true
+            exit 1
+          fi
 
       - name: Find built APK
         id: find-apk
         run: |
-          # Search for APK
-          find app/build -name "*.apk" -type f 2>/dev/null | while read file; do
-            echo "Found APK: $file ($(stat -c%s "$file") bytes)"
-          done
-          
+          # Ieškoti APK
           APK_PATH=$(find app/build -name "*.apk" -type f 2>/dev/null | grep -i "debug" | head -1)
           
           if [ -z "$APK_PATH" ]; then
             echo "ERROR: No APK found!"
             echo "Checking build outputs..."
+            find app/build -type f -name "*.apk" 2>/dev/null
             find app/build/outputs -type f 2>/dev/null | head -20
             exit 1
           fi
@@ -126,7 +133,7 @@ jobs:
           echo "=== Keystore Verification ==="
           echo "File size: $(wc -c < debug.keystore) bytes"
           
-          # Verify keystore
+          # Patikrinti keystore
           if ! keytool -list -v -keystore debug.keystore \
             -storepass "${{ secrets.KEY_PASSWORD }}" \
             -alias "${{ secrets.KEY_ALTAS }}" 2>/dev/null; then
