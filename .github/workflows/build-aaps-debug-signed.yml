@@ -3,14 +3,20 @@ name: Build AndroidAPS (debug-signed for update)
 on:
   workflow_dispatch:
 
-concurrency:
-  group: aaps-debug-signed-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 180
+
+    env:
+      # Gradle/JVM limits to avoid runner kill
+      GRADLE_OPTS: >
+        -Dorg.gradle.daemon=false
+        -Dorg.gradle.parallel=false
+        -Dorg.gradle.configureondemand=false
+        -Dorg.gradle.caching=false
+        -Dorg.gradle.jvmargs=-Xmx1536m -XX:MaxMetaspaceSize=512m -Dfile.encoding=UTF-8
+        -Dkotlin.daemon.jvm.options=-Xmx512m
 
     steps:
       - uses: actions/checkout@v4
@@ -20,36 +26,47 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      - name: Setup Gradle cache
+      - name: Disable Gradle cache (stability)
         uses: gradle/actions/setup-gradle@v3
+        with:
+          cache-disabled: true
 
       - name: Grant execute to gradlew
         run: chmod +x ./gradlew
 
-      # 1) Surandam tikslų "assemble *aapsclient* Debug" taską ir buildinam tik jį
-      - name: Build AAPS Client Debug APK only (avoid wear/pumpcontrol)
+      - name: Show candidate assemble tasks
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew -q :app:tasks --all | tr -d '\r' | awk '{print $1}' | grep -Ei '^assemble.*aapsclient.*Debug$' || true
+          echo "----"
+          echo "All assemble tasks (first 120):"
+          ./gradlew -q :app:tasks --all | tr -d '\r' | awk '{print $1}' | grep -E '^assemble' | head -n 120 || true
+
+      - name: Pick and build AAPS Client Debug (min resources)
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "Listing app assemble tasks..."
-          TASKS="$(./gradlew -q :app:tasks --all | tr -d '\r')"
-
-          # Paimam pirmą tinkamą taską (skiriasi tarp versijų/branch'ų)
-          CANDIDATE="$(echo "$TASKS" | awk '{print $1}' | grep -Ei '^assemble.*aapsclient.*Debug$' | head -n 1 || true)"
+          TASKS="$(./gradlew -q :app:tasks --all | tr -d '\r' | awk '{print $1}')"
+          CANDIDATE="$(echo "$TASKS" | grep -Ei '^assemble.*aapsclient.*Debug$' | head -n 1 || true)"
 
           if [ -z "$CANDIDATE" ]; then
-            echo "No assemble*aapsclient*Debug task found. Showing assemble tasks:"
-            echo "$TASKS" | awk '{print $1}' | grep -E '^assemble' | head -n 200
+            echo "No assemble*aapsclient*Debug task found"
             exit 1
           fi
 
-          echo "Using Gradle task: :app:${CANDIDATE}"
+          echo "Using task: :app:$CANDIDATE"
 
-          # Greitesnis/stabilesnis build GitHub'e
-          ./gradlew ":app:${CANDIDATE}" -x test -x lint --no-daemon --stacktrace --warning-mode all
+          ./gradlew ":app:$CANDIDATE" \
+            --no-daemon \
+            --no-parallel \
+            --no-configuration-cache \
+            --max-workers=1 \
+            --stacktrace \
+            -x test -x lint -x check
 
-      - name: Decode debug.keystore (from secrets)
+      - name: Decode debug.keystore
         run: |
           echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > debug.keystore
           ls -la debug.keystore
@@ -64,18 +81,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "Searching for APK outputs..."
           find . -maxdepth 12 -type f -name "*.apk" -path "*build/outputs/apk*" -print
-
           APK_IN=$(find . -maxdepth 12 -type f -name "*.apk" -path "*build/outputs/apk*" | grep -i "aapsclient" | head -n 1 || true)
-
           if [ -z "$APK_IN" ]; then
-            echo "No aapsclient APK found under build/outputs/apk"
+            echo "No aapsclient APK found"
             exit 1
           fi
-
-          echo "Using APK: $APK_IN"
           echo "APK_IN=$APK_IN" >> $GITHUB_ENV
+          echo "Using APK: $APK_IN"
 
       - name: Align APK
         run: |
