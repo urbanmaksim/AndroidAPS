@@ -19,11 +19,40 @@ jobs:
           distribution: temurin
           java-version: "11"
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          api-level: 34
-          build-tools: 34.0.0
+      # SVARBU: naudojame senesnę Android SDK versiją, kuri veikia su JDK 11
+      - name: Setup Android SDK (JDK 11 compatible)
+        run: |
+          # Nustatome kintamuosius
+          export ANDROID_HOME=/usr/local/lib/android/sdk
+          echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
+          
+          # Sukuriame katalogą
+          sudo mkdir -p $ANDROID_HOME
+          sudo chmod -R 777 $ANDROID_HOME
+          
+          # Atsisiunčiame senesnę Command Line Tools versiją (10.0), kuri veikia su JDK 11
+          # Ši versija išleista 2023 metais, palaiko JDK 11
+          wget -q https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip
+          unzip -q commandlinetools-linux-9477386_latest.zip
+          mkdir -p $ANDROID_HOME/cmdline-tools
+          mv cmdline-tools $ANDROID_HOME/cmdline-tools/10.0
+          rm commandlinetools-linux-9477386_latest.zip
+          
+          # Įtraukiame į PATH
+          echo "$ANDROID_HOME/cmdline-tools/10.0/bin" >> $GITHUB_PATH
+          echo "$ANDROID_HOME/platform-tools" >> $GITHUB_PATH
+          
+          # Priimame licencijas
+          yes | $ANDROID_HOME/cmdline-tools/10.0/bin/sdkmanager --licenses || true
+          
+          # Įdiegiame reikiamus paketus
+          $ANDROID_HOME/cmdline-tools/10.0/bin/sdkmanager "platform-tools"
+          $ANDROID_HOME/cmdline-tools/10.0/bin/sdkmanager "platforms;android-33"
+          $ANDROID_HOME/cmdline-tools/10.0/bin/sdkmanager "build-tools;33.0.0"
+          
+          # Patikriname
+          echo "Installed packages:"
+          $ANDROID_HOME/cmdline-tools/10.0/bin/sdkmanager --list
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
@@ -37,7 +66,7 @@ jobs:
       - name: Build AAPS Debug
         run: |
           ./gradlew clean
-          # Try specific task first, then fallback
+          # Pabandome įprastą debug build'ą
           if ./gradlew :app:assembleAapsclientDebug --stacktrace; then
             echo "Build successful with assembleAapsclientDebug"
           else
@@ -48,7 +77,7 @@ jobs:
       - name: Find built APK
         id: find-apk
         run: |
-          # Search for APK
+          # Ieškome APK
           APK_PATH=$(find app/build/outputs/apk -name "*.apk" -type f 2>/dev/null | head -1)
           
           if [ -z "$APK_PATH" ]; then
@@ -63,13 +92,13 @@ jobs:
 
       - name: Decode and verify debug.keystore
         run: |
-          # Decode keystore from secret
+          # Dekoduojame keystore iš secret
           echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > debug.keystore
           
           echo "=== Keystore Verification ==="
           echo "File size: $(wc -c < debug.keystore) bytes"
           
-          # Get SHA1 from keystore
+          # Gauname SHA1 iš keystore
           KEYTOOL_OUTPUT=$(keytool -list -v -keystore debug.keystore \
             -storepass "${{ secrets.KEY_PASSWORD }}" \
             -alias "${{ secrets.KEY_ALTAS }}" 2>&1)
@@ -94,14 +123,14 @@ jobs:
 
       - name: Sign APK
         run: |
-          # Find latest build-tools
-          BUILD_TOOLS_DIR=$(ls -d $ANDROID_HOME/build-tools/* | sort -V | tail -1)
+          # Naudojame build-tools 33.0.0 (nes turime Android 33)
+          BUILD_TOOLS_DIR="$ANDROID_HOME/build-tools/33.0.0"
           echo "Using build-tools: $BUILD_TOOLS_DIR"
           
           # Zipalign
           $BUILD_TOOLS_DIR/zipalign -f -p 4 "$APK_PATH" aligned.apk
           
-          # Sign with apksigner
+          # Pasirašome su apksigner
           $BUILD_TOOLS_DIR/apksigner sign \
             --ks debug.keystore \
             --ks-key-alias "${{ secrets.KEY_ALTAS }}" \
@@ -113,7 +142,7 @@ jobs:
           echo "=== Signed APK Info ==="
           ls -la aaps-debug-signed.apk
           
-          # Verify
+          # Tikriname
           $BUILD_TOOLS_DIR/apksigner verify --print-certs aaps-debug-signed.apk
 
       - name: Upload signed APK
