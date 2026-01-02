@@ -23,7 +23,7 @@ jobs:
           
           # Reset any changes
           git reset --hard HEAD
-          git clean -xfd
+          git clean -xfd -e .gradle/ -e .idea/
           
           Write-Host "Git status after cleanup:"
           git status --porcelain
@@ -79,70 +79,79 @@ jobs:
           Write-Host "Gradle wrapper exists"
           .\gradlew --version
 
-      - name: Build AAPS Client Debug
+      - name: Clean and build AAPS Client Debug
         shell: pwsh
         run: |
-          # Set environment variables for Gradle memory (instead of modifying gradle.properties)
-          $env:GRADLE_OPTS = "-Xmx4g -XX:MaxMetaspaceSize=512m -XX:+HeapDumpOnOutOfMemoryError -Dfile.encoding=UTF-8"
-          $env:JAVA_OPTS = "-Xmx4g"
+          # Set minimal environment variables
+          $env:GRADLE_OPTS = "-Xmx2g -Dfile.encoding=UTF-8"
           
-          # First, list available tasks to see what's there
-          Write-Host "Listing available assemble tasks..."
-          .\gradlew :app:tasks --all --no-daemon | Select-String "assemble" | ForEach-Object { Write-Host "  $_" }
+          # First clean everything
+          Write-Host "Cleaning project..."
+          .\gradlew clean --no-daemon --stacktrace
           
-          # Try different possible task names
-          $possibleTasks = @(
+          # Try to find the correct task
+          Write-Host "`nListing available assemble tasks..."
+          $tasksOutput = .\gradlew :app:tasks --all --no-daemon
+          $assembleTasks = $tasksOutput | Select-String "assemble" | ForEach-Object { $_.ToString().Trim() }
+          $assembleTasks | ForEach-Object { Write-Host "  $_" }
+          
+          # Try specific tasks in order of likelihood
+          $tasksToTry = @(
             "assembleAapsclientDebug",
+            "assembleFullDebug", 
             "assembleDebug",
-            "assembleFullDebug",
-            "assembleClientDebug"
+            "assemble"
           )
           
           $success = $false
-          foreach ($task in $possibleTasks) {
-            Write-Host "`nTrying task: $task"
+          foreach ($task in $tasksToTry) {
+            Write-Host "`n=== Trying to build with task: :app:$task ==="
             try {
-              .\gradlew ":app:$task" --no-daemon --stacktrace --info
+              # Run with minimal options
+              .\gradlew ":app:$task" --no-daemon --stacktrace
               $success = $true
-              Write-Host "Successfully built with task: $task"
+              Write-Host "`n✓ Successfully built with task: :app:$task"
               break
             } catch {
-              Write-Host "Task $task failed: $_"
+              Write-Host "`n✗ Task :app:$task failed"
+              Write-Host "Error: $_"
             }
           }
           
           if (-not $success) {
-            # Last resort: try generic assembleDebug
-            Write-Host "`nTrying generic assembleDebug..."
-            .\gradlew assembleDebug --no-daemon --stacktrace --info
+            throw "All build attempts failed."
           }
 
       - name: Find built APK
         shell: pwsh
         run: |
-          # Search for APK files
-          $apk = Get-ChildItem -Recurse -Filter *.apk -Path "app" | Where-Object {
-            $_.FullName -match "outputs" -and 
-            $_.FullName -notmatch "test" -and
-            $_.FullName -notmatch "kotlin"
-          } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-          
-          if (-not $apk) {
-            # Try broader search
-            $apk = Get-ChildItem -Recurse -Filter *.apk | Where-Object {
-              $_.FullName -match "build" -and $_.FullName -match "apk"
-            } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          # Search for APK files in the standard location
+          $apkPath = "app\build\outputs\apk"
+          if (Test-Path $apkPath) {
+            $apk = Get-ChildItem -Path $apkPath -Recurse -Filter *.apk | 
+                   Where-Object { $_.Name -match "debug" -and $_.Name -match "aaps" } |
+                   Sort-Object LastWriteTime -Descending | 
+                   Select-Object -First 1
           }
           
           if (-not $apk) {
-            Write-Host "APK files found in the project:"
+            # Broader search
+            $apk = Get-ChildItem -Path "." -Recurse -Filter *.apk |
+                   Where-Object { $_.FullName -match "build" -and $_.FullName -match "apk" -and $_.Name -match "debug" } |
+                   Sort-Object LastWriteTime -Descending |
+                   Select-Object -First 1
+          }
+          
+          if (-not $apk) {
+            Write-Host "Available APK files:"
             Get-ChildItem -Recurse -Filter *.apk | ForEach-Object { Write-Host "  $($_.FullName)" }
-            throw "APK not found in expected locations"
+            throw "Could not find APK file"
           }
           
-          "APK_PATH=$($apk.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          Write-Host "Found APK: $($apk.FullName)"
-          Write-Host "APK Size: $($apk.Length / 1MB) MB"
+          $apkPath = $apk.FullName
+          "APK_PATH=$apkPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Found APK: $apkPath"
+          Write-Host "APK Size: $([math]::Round($apk.Length / 1MB, 2)) MB"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
