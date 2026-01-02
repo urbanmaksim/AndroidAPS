@@ -134,7 +134,7 @@ jobs:
           # Patikriname SHA1
           ACTUAL_SHA1=$(keytool -list -v -keystore debug.keystore \
             -storepass "${{ secrets.KEY_PASSWORD }}" \
-            -alias "${{ secrets.KEY_ALTAS }}" 2>/dev/null | \
+            -alias "${{ secrets.KEY_ALIAS }}" 2>/dev/null | \
             grep -i "SHA1:" | head -1 | awk '{print $2}' | tr -d ':' | tr '[:upper:]' '[:lower:]' || echo "")
           
           if [ -z "$ACTUAL_SHA1" ]; then
@@ -163,7 +163,7 @@ jobs:
           # Sign
           $BUILD_TOOLS_DIR/apksigner sign \
             --ks debug.keystore \
-            --ks-key-alias "${{ secrets.KEY_ALTAS }}" \
+            --ks-key-alias "${{ secrets.KEY_ALIAS }}" \
             --ks-pass pass:"${{ secrets.KEY_PASSWORD }}" \
             --key-pass pass:"${{ secrets.KEY_PASSWORD }}" \
             --out aaps-debug-signed.apk \
