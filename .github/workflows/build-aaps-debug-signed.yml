@@ -10,7 +10,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
 
     steps:
       - uses: actions/checkout@v4
@@ -26,8 +26,28 @@ jobs:
       - name: Grant execute to gradlew
         run: chmod +x ./gradlew
 
-      - name: Build Debug APK
-        run: ./gradlew assembleDebug --no-daemon --stacktrace --warning-mode all
+      # 1) Surandam tikslų "assemble *aapsclient* Debug" taską ir buildinam tik jį
+      - name: Build AAPS Client Debug APK only (avoid wear/pumpcontrol)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Listing app assemble tasks..."
+          TASKS="$(./gradlew -q :app:tasks --all | tr -d '\r')"
+
+          # Paimam pirmą tinkamą taską (skiriasi tarp versijų/branch'ų)
+          CANDIDATE="$(echo "$TASKS" | awk '{print $1}' | grep -Ei '^assemble.*aapsclient.*Debug$' | head -n 1 || true)"
+
+          if [ -z "$CANDIDATE" ]; then
+            echo "No assemble*aapsclient*Debug task found. Showing assemble tasks:"
+            echo "$TASKS" | awk '{print $1}' | grep -E '^assemble' | head -n 200
+            exit 1
+          fi
+
+          echo "Using Gradle task: :app:${CANDIDATE}"
+
+          # Greitesnis/stabilesnis build GitHub'e
+          ./gradlew ":app:${CANDIDATE}" -x test -x lint --no-daemon --stacktrace --warning-mode all
 
       - name: Decode debug.keystore (from secrets)
         run: |
@@ -40,18 +60,17 @@ jobs:
           echo "BT=$BT" >> $GITHUB_ENV
           echo "Using build-tools: $BT"
 
-      - name: Find built APK (prefer AAPS client)
+      - name: Find built APK (prefer aapsclient)
+        shell: bash
         run: |
-          echo "Listing APK outputs:"
+          set -euo pipefail
+          echo "Searching for APK outputs..."
           find . -maxdepth 12 -type f -name "*.apk" -path "*build/outputs/apk*" -print
 
           APK_IN=$(find . -maxdepth 12 -type f -name "*.apk" -path "*build/outputs/apk*" | grep -i "aapsclient" | head -n 1 || true)
-          if [ -z "$APK_IN" ]; then
-            APK_IN=$(find . -maxdepth 12 -type f -name "*.apk" -path "*build/outputs/apk*" | head -n 1)
-          fi
 
           if [ -z "$APK_IN" ]; then
-            echo "No APK found under *build/outputs/apk*"
+            echo "No aapsclient APK found under build/outputs/apk"
             exit 1
           fi
 
